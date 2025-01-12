@@ -20,6 +20,10 @@ from envs.connect_x.trainer import ConnectXTrainer
 from envs.othello.collector import OthelloCollector
 from envs.othello.tester import OthelloTester
 from envs.othello.trainer import OthelloTrainer
+from envs.durak.env import DurakEnv, DurakEnvConfig
+from envs.durak.collector import DurakCollector
+from envs.durak.trainer import DurakTrainer
+from envs.durak.tester import DurakTester
 from .othello.env import OthelloEnv, OthelloEnvConfig
 from ._2048.env import _2048Env, _2048EnvConfig
 
@@ -34,9 +38,12 @@ def init_env(device: torch.device, parallel_envs: int, env_config: dict, debug: 
     elif env_type == 'connect_x':
         config = ConnectXConfig(**env_config)
         return ConnectXEnv(parallel_envs, config, device, debug)
+    elif env_type == 'durak':
+        config = DurakEnvConfig(**env_config)
+        return DurakEnv(parallel_envs, config, device, debug)
     else:
         raise NotImplementedError(f'Environment {env_type} not implemented')
-    
+
 def init_collector(episode_memory_device: torch.device, env_type: str, evaluator: Evaluator):
     if env_type == 'othello':
         return OthelloCollector(
@@ -53,9 +60,14 @@ def init_collector(episode_memory_device: torch.device, env_type: str, evaluator
             evaluator=evaluator,
             episode_memory_device=episode_memory_device
         )
+    elif env_type == 'durak':
+        return DurakCollector(
+            evaluator=evaluator,
+            episode_memory_device=episode_memory_device
+        )
     else:
         raise NotImplementedError(f'Collector for environment {env_type} not supported')
-    
+
 def init_tester(
     test_config: dict,
     env_type: str,
@@ -96,14 +108,24 @@ def init_tester(
             log_results=log_results,
             debug=debug
         )
+    elif env_type == 'durak':
+        return DurakTester(
+            config=TesterConfig(**test_config),
+            collector=collector,
+            model=model,
+            optimizer=optimizer,
+            history=history,
+            log_results=log_results,
+            debug=debug
+        )
     else:
         raise NotImplementedError(f'Tester for {env_type} not supported')
 
 def init_trainer(
-    device: torch.device, 
-    env_type: str, 
-    collector: Collector, 
-    tester: Tester, 
+    device: torch.device,
+    env_type: str,
+    collector: Collector,
+    tester: Tester,
     model: TurboZeroResnet,
     optimizer: torch.optim.Optimizer,
     train_config: dict,
@@ -168,6 +190,23 @@ def init_trainer(
             run_tag = run_tag,
             debug = debug
         )
+    elif env_type == 'durak':
+        trainer_config = TrainerConfig(**train_config)
+        return DurakTrainer(
+            config=trainer_config,
+            collector=collector,
+            tester=tester,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+            raw_train_config=train_config,
+            raw_env_config=env_config,
+            history=history,
+            log_results=log_results,
+            interactive=interactive,
+            run_tag=run_tag,
+            debug=debug
+        )
     else:
         logging.warn(f'No trainer found for environment {env_type}')
         return Trainer(
@@ -185,4 +224,3 @@ def init_trainer(
             run_tag = run_tag,
             debug = debug
         )
-            
