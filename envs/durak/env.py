@@ -151,6 +151,10 @@ class DurakEnv(Env):
         self.terminated.zero_()
         self.cur_players.zero_()  # start with player=0, but we override in current_player() anyway
 
+
+        # Process all chance steps (deal cards etc.)
+        self._process_all_chance_steps(~self._game_over)
+
         return 0 if seed is None else seed
 
     def is_terminal(self) -> torch.Tensor:
@@ -169,9 +173,6 @@ class DurakEnv(Env):
         """
         # Find active environments
         active = ~self._game_over
-
-        # Process all chance steps first
-        self._process_all_chance_steps(active)
 
         # Now, find environments that are not in CHANCE and are active
         mask_non_chance = (self._phase != CHANCE) & active
