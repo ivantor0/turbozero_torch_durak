@@ -8,8 +8,7 @@ from core.test.tester import Tester
 
 class DurakTrainer(Trainer):
     """
-    A Trainer specialized for Durak. In many cases, the base Trainer is fine.
-    But we can override add_collection_metrics or add_epoch_metrics if we want.
+    Trainer specialized for Durak.
     """
 
     def __init__(
@@ -45,9 +44,9 @@ class DurakTrainer(Trainer):
         )
 
     def add_collection_metrics(self, episodes):
-        # For each finished episode, we might record e.g. final reward or # steps.
-        for e in episodes:
-            final_reward = e[-1][2].item()  # last transition’s reward
+        # For each finished episode, we can record final reward
+        for ep in episodes:
+            final_reward = ep[-1][2].item()
             self.history.add_episode_data({'episode_reward': final_reward}, log=self.log_results)
 
     def add_epoch_metrics(self):
