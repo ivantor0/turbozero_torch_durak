@@ -366,12 +366,14 @@ class DurakEnv(Env):
                     legal[i, FINISH_ATTACK] = True
 
             elif ph == DEFENSE and cur_p == self._defender[i].item():
-                # The defender can TAKE_CARDS always
-                legal[i, TAKE_CARDS] = True
                 # If everything is covered => can FINISH_DEFENSE
                 if self._all_covered(self._table_cards[i]):
                     legal[i, FINISH_DEFENSE] = True
                 else:
+                    # Alternatively, can take cards
+                    # Strictly speaking, it's legal in Durak to take cards if everything's covered
+                    # But it also is absurd, and we wanna avoid the possibility of our agents making this move
+                    legal[i, TAKE_CARDS] = True
                     # The earliest uncovered card => see if we can cover it
                     row, att_card = self._find_earliest_uncovered(self._table_cards[i])
                     if row != -1 and att_card >= 0:
