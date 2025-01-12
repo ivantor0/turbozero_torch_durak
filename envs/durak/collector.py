@@ -16,7 +16,7 @@ class DurakCollector(Collector):
     def assign_rewards(self, terminated_episodes, terminated):
         """
         For each environment that terminated, we query final reward from the perspective
-        of the last player who moved or from self.evaluator.env.cur_players (like Othello).
+        of the last player who moved or from self.evaluator.env.cur_players.
         We'll store that final reward for each step in the episode.
         """
         episodes = []
@@ -24,11 +24,7 @@ class DurakCollector(Collector):
         if terminated.any():
             term_indices = terminated.nonzero(as_tuple=False).flatten()
             # We'll get the final reward for each terminated environment from get_rewards().
-            # But note Durak is 2-player. Usually we store the perspective-based reward for the
-            # current player. For 2-player zero-sum we might store the reward from the perspective
-            # of whichever player actually took the last move.
-            # We'll do something simpler: we call get_rewards() with the current environment’s
-            # cur_players for each env.
+            # For 2-player zero-sum, we store the reward from the perspective of the current player.
             final_rews = self.evaluator.env.get_rewards()  # shape [N]
             for i, episode in enumerate(terminated_episodes):
                 env_idx = term_indices[i]

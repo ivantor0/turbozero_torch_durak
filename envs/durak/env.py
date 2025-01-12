@@ -36,7 +36,6 @@ class DurakEnvConfig(EnvConfig):
     # E.g. no extra parameters, we just store env_type and maybe debug
     pass
 
-
 class DurakEnv(Env):
     """
     A vectorized Durak environment that implements the same logic as your durak.py.
@@ -168,64 +167,88 @@ class DurakEnv(Env):
          - Then we check if the game is over.
         Return self.terminated (bool [N]).
         """
-        # For each environment i, skip if _game_over[i] is True
+        # Find active environments
         active = ~self._game_over
 
-        # Handle CHANCE phase first, ignoring the chosen action.
-        # Because your original code does a "chance node" for each deal or for revealing trump:
-        self._apply_chance_logic(active)
+        # Process all chance steps first
+        self._process_all_chance_steps(active)
 
-        # Next, for those still active, interpret the chosen action:
-        # We'll gather the subset of envs that are not game_over and not chance-phase:
-        # The reason is that if phase is CHANCE for environment i, we might not want to
-        # process the player's action yet. The environment i remains CHANCE until it finishes dealing + revealing.
-        # But in single-threaded code, you do them one by one. Here we do it in a single pass each step.
-        # We'll do a while loop until all envs are no longer CHANCE or are over.
-        # But that can complicate matters for MCTS.
-        # Instead, the simplest approach is: if environment is still in CHANCE phase after _apply_chance_logic, we skip interpreting the player's action for that environment until next step.
-        # That means from the perspective of MCTS, "the environment is 'waiting' for the next step to see if we deal again or reveal trump, etc."
-        # This does replicate your original code's idea that each "chance outcome" is one step.
-        # So let's do that.
+        # Now, find environments that are not in CHANCE and are active
         mask_non_chance = (self._phase != CHANCE) & active
 
-        # interpret actions only for mask_non_chance:
-        # We'll gather arrays of indices for each environment
+        # Find indices
         idxs = torch.nonzero(mask_non_chance, as_tuple=False).flatten()
         if len(idxs) > 0:
             selected_actions = actions[idxs]
             self._apply_actions(idxs, selected_actions)
 
         # Check if any environment ended up game_over after the move
-        self._check_game_over(active)
+        self._check_game_over(mask_non_chance)
 
-        # We also update self.terminated for TurboZero:
+        # Update termination
         self.terminated = self._game_over
 
-        # Next, we set cur_players to the actual current_player for each environment:
+        # Update current players
         self.cur_players = self._current_player_ids()
 
         return self.terminated
 
+    def _process_all_chance_steps(self, mask: torch.Tensor):
+        """
+        Repeatedly apply chance logic until no more environments are in CHANCE.
+        """
+        max_iters = 20  # Safeguard against infinite loops
+        for _ in range(max_iters):
+            chance_mask = mask & (self._phase == CHANCE) & (~self._game_over)
+            if not chance_mask.any():
+                break
+            self._apply_chance_logic(chance_mask)
+        else:
+            if self.debug:
+                print("Max iterations reached in _process_all_chance_steps")
+
+    def _apply_chance_logic(self, mask: torch.Tensor):
+        """
+        For each environment i in mask where _phase[i] == CHANCE and not game_over,
+        we attempt to do the next dealing step, or reveal trump, per your code.
+        If we finish dealing + revealing, we set phase=ATTACK.
+        """
+        idxs = torch.nonzero(mask & (self._phase == CHANCE), as_tuple=False).flatten()
+        if len(idxs) == 0:
+            return
+
+        for i in idxs:
+            if self._cards_dealt[i] < _CARDS_PER_PLAYER * _NUM_PLAYERS:
+                # deal top card to next player
+                next_card = self._decks[i, self._deck_pos[i]]
+                player_idx = self._cards_dealt[i] % _NUM_PLAYERS
+                self._hands[i, player_idx, next_card] = True
+                self._deck_pos[i] += 1
+                self._cards_dealt[i] += 1
+            else:
+                # reveal the last card as trump, if not done
+                if self._trump_card[i] < 0:
+                    # the last card:
+                    self._trump_card[i] = self._decks[i, _NUM_CARDS-1]
+                    self._trump_suit[i] = suit_of(self._trump_card[i].item())
+                    # decide first attacker
+                    self._decide_first_attacker(i)
+                    self._phase[i] = ATTACK
+                    self._round_starter[i] = self._attacker[i]
+
     def get_rewards(self, player_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Return final rewards if game_over, else intermediate 0.5 or 0.0, etc.
-        In your code: returns() is [0,0] if not done. If done, we do -1 for the loser, +1 for the winner, or 0 if corner case.
-        We'll mimic that.
-        Because we have a vector of states, we produce a reward for each environment from the perspective of `player_ids` if given,
-        else from the perspective of self.cur_players.
+        Return final rewards if game_over, else intermediate 0.0.
+        Mimics your returns() logic:
+          - If exactly one player has cards, that player gets -1, the other +1.
+          - If both have cards or none have cards, handle accordingly.
+          - If none have cards and deck is empty, attacker wins.
+          - If none have cards but deck isn't empty, treat as 0.0.
         """
         if player_ids is None:
             player_ids = self.cur_players
 
-        # We'll do exactly the logic from returns():
-        # If not game_over => 0.0
-        # If exactly one has cards => that one is -1, the other is +1.
-        # If both or none => we might do 0.0 or the special logic. We'll try to replicate exactly.
-
-        # We'll produce a [N] float tensor with each environment's final reward from the perspective of `player_ids[i]`.
-        # For single-step usage (like MCTS), typically we do the reward for the "current" perspective.
-        # If environment i is done => we check the final outcome.
-        # If environment i is not done => 0.0.
+        # Initialize rewards to 0.0
         rew = torch.zeros((self.parallel_envs,), device=self.device, dtype=torch.float32)
 
         done = self._game_over
@@ -233,7 +256,7 @@ class DurakEnv(Env):
             # If none are done => return all zeros
             return rew
 
-        # For envs that are done, we replicate your returns() logic:
+        # For envs that are done, replicate your returns() logic:
         # We'll figure out how many cards each player has
         hands_count = self._hands.sum(dim=2)  # shape [N, 2], number of cards for each player
         # players_with_cards is the set of players with >0 cards
@@ -267,7 +290,6 @@ class DurakEnv(Env):
         final_results[mask_2, 1] = 0.0
 
         # Case 3: none have cards => check if deck is empty => attacker is winner, else [0,0]
-        # In your code, we do the logic if deck_pos >= len(deck): attacker= winner => +1, other => -1, else 0,0
         mask_0 = (count_players_with_cards == 0) & done
         if mask_0.any():
             idxs = torch.nonzero(mask_0, as_tuple=False).flatten()
@@ -294,7 +316,7 @@ class DurakEnv(Env):
     def get_legal_actions(self) -> torch.Tensor:
         """
         Return a bool [N,39] indicating for each environment which actions are available.
-        We'll replicate your _legal_actions from durak.py, for the current player in each env.
+        Replicates your _legal_actions from durak.py, for the current player in each env.
         If game is over or it's chance, then no actions are available.
         """
         legal = torch.zeros((self.parallel_envs, _NUM_CARDS + 3), dtype=torch.bool, device=self.device)
@@ -350,8 +372,8 @@ class DurakEnv(Env):
                     legal[i, FINISH_DEFENSE] = True
                 else:
                     # The earliest uncovered card => see if we can cover it
-                    earliest_idx, att_card = self._find_earliest_uncovered(self._table_cards[i])
-                    if earliest_idx != -1 and att_card >= 0:
+                    row, att_card = self._find_earliest_uncovered(self._table_cards[i])
+                    if row != -1 and att_card >= 0:
                         # For each c in hand, check if can defend
                         for c in hand_cards:
                             if self._can_defend_card(i, c, att_card):
@@ -362,7 +384,6 @@ class DurakEnv(Env):
     def next_turn(self):
         """
         Called by MCTS expansions. We do nothing because our step method already handles switching phases, etc.
-        If you want to rotate player, do it in your logic.
         """
         pass
 
@@ -468,35 +489,6 @@ class DurakEnv(Env):
     # --------------------------------------------------------------------------
     # Internal logic
 
-    def _apply_chance_logic(self, mask: torch.Tensor):
-        """
-        For each environment i in mask where _phase[i] == CHANCE and not game_over,
-        we attempt to do the next dealing step, or reveal trump, per your code.
-        If we finish dealing + revealing, we set phase=ATTACK.
-        """
-        idxs = torch.nonzero(mask & (self._phase == CHANCE), as_tuple=False).flatten()
-        if len(idxs) == 0:
-            return
-
-        for i in idxs:
-            if self._cards_dealt[i] < _CARDS_PER_PLAYER * _NUM_PLAYERS:
-                # deal top card to next player
-                next_card = self._decks[i, self._deck_pos[i]]
-                player_idx = self._cards_dealt[i] % _NUM_PLAYERS
-                self._hands[i, player_idx, next_card] = True
-                self._deck_pos[i] += 1
-                self._cards_dealt[i] += 1
-            else:
-                # reveal the last card as trump, if not done
-                if self._trump_card[i] < 0:
-                    # the last card:
-                    self._trump_card[i] = self._decks[i, _NUM_CARDS-1]
-                    self._trump_suit[i] = suit_of(self._trump_card[i].item())
-                    # decide first attacker
-                    self._decide_first_attacker(i)
-                    self._phase[i] = ATTACK
-                    self._round_starter[i] = self._attacker[i]
-
     def _apply_actions(self, idxs: torch.Tensor, actions: torch.Tensor):
         """
         For each environment i in idxs, interpret the chosen action.
@@ -520,19 +512,16 @@ class DurakEnv(Env):
                 # normal card
                 # check if in player's hand
                 if self._hands[i, p, act]:
-                    if ph in [ATTACK, ADDITIONAL] and p == self._attacker[i]:
+                    if ph in [ATTACK, ADDITIONAL] and p == self._attacker[i].item():
                         # place attacking card
                         self._hands[i, p, act] = False
                         # put on first free row in table_cards if we are continuing ATTACK
-                        # or if 0 table cards, just put in table_cards[0,0].
-                        # Actually in your code, you just append at the end, but we store in a 6x2 matrix.
-                        # We'll place it in the next empty row.
                         row = self._find_first_empty_attack_row(i)
                         if row != -1:
                             self._table_cards[i, row, 0] = act
                         # remain in ATTACK phase
                         self._phase[i] = ATTACK
-                    elif ph == DEFENSE and p == self._defender[i]:
+                    elif ph == DEFENSE and p == self._defender[i].item():
                         # defend earliest uncovered
                         row, att_card = self._find_earliest_uncovered(self._table_cards[i])
                         if row != -1 and att_card >= 0:
@@ -631,11 +620,11 @@ class DurakEnv(Env):
             return
         order = [self._attacker[i].item(), self._defender[i].item()]
 
-        while self._deck_pos[i] < _NUM_CARDS:
+        while self._deck_pos[i] < _NUM_CARDS -1:
             for p in order:
-                if self._count_hand(i, p) < _CARDS_PER_PLAYER and self._deck_pos[i] < _NUM_CARDS-1:
+                if self._count_hand(i, p) < _CARDS_PER_PLAYER and self._deck_pos[i] < _NUM_CARDS -1:
                     # draw from top (except the very last card is the trump face up)
-                    c = self._decks[i, self._deck_pos[i]]
+                    c = self._decks[i, self._deck_pos[i]].item()
                     self._deck_pos[i] += 1
                     self._hands[i, p, c] = True
             # if both full, break
@@ -668,22 +657,13 @@ class DurakEnv(Env):
     def _current_player_ids(self) -> torch.Tensor:
         """
         Return an [N] of current player IDs based on self._phase.
-        If phase in [ATTACK, ADDITIONAL], current=attacker, else if DEFENSE => defender, else CHANCE => ???
-        We do CHANCE => -1 or 0, but for MCTS we might do self.attacker.
-        Let's just do -1 for chance to indicate no real 'current player'.
-        But we have to keep the shape consistent, so let's do:
-          if CHANCE => -1
-        Then the value transform might skip them anyway.
+        If phase in [ATTACK, ADDITIONAL], current=attacker, else if DEFENSE => defender, else CHANCE => 0.
         """
-        cp = torch.full((self.parallel_envs,), -1, dtype=torch.long, device=self.device)
+        cp = torch.full((self.parallel_envs,), 0, dtype=torch.long, device=self.device)  # default to 0 for CHANCE
         mask_attack = (self._phase == ATTACK) | (self._phase == ADDITIONAL)
         cp[mask_attack] = self._attacker[mask_attack]
         mask_def = (self._phase == DEFENSE)
         cp[mask_def] = self._defender[mask_def]
-        # for CHANCE, remain -1
-        # But TurboZero doesn't let us have -1 as a cur_player. We'll just store 0 for CHANCE. It's simpler.
-        mask_chance = (self._phase == CHANCE)
-        cp[mask_chance] = 0
         return cp
 
     def _current_player_id(self, i: int) -> int:
