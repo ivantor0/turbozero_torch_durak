@@ -1,15 +1,19 @@
 # envs/durak/tester.py
 
-from core.test.tester import Tester
+from core.test.tester import TwoPlayerTester
 
-class DurakTester(Tester):
+class DurakTester(TwoPlayerTester):
     """
-    Minimal example: after collecting test episodes, we record their final rewards
-    (which might be +1 or -1 from the perspective of the environment's current player).
+    A specialized tester for 2-player Durak.
+    Inherits from TwoPlayerTester to handle two-player head-to-head evaluations.
     """
 
     def add_evaluation_metrics(self, episodes):
+        # This gets called for each batch of completed episodes during the test step.
+        # You can record stats such as # wins, # losses, etc.
         if self.history is not None:
-            for ep in episodes:
-                final_reward = ep[-1][2].item()  # the last transition’s reward
-                self.history.add_evaluation_data({'durak_score': final_reward}, log=self.log_results)
+            for _ in episodes:
+                # Example: we won't parse out each final reward here,
+                # because TwoPlayerTester automatically handles some stats.
+                # But you *could* do e.g. self.history.add_evaluation_data({...})
+                self.history.add_evaluation_data({}, log=self.log_results)

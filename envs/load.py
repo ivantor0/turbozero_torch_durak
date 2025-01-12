@@ -110,7 +110,7 @@ def init_tester(
         )
     elif env_type == 'durak':
         return DurakTester(
-            config=TesterConfig(**test_config),
+            config=TwoPlayerTesterConfig(**test_config),
             collector=collector,
             model=model,
             optimizer=optimizer,
@@ -200,7 +200,7 @@ def init_trainer(
             optimizer=optimizer,
             device=device,
             raw_train_config=train_config,
-            raw_env_config=env_config,
+            raw_env_config=raw_env_config,
             history=history,
             log_results=log_results,
             interactive=interactive,
