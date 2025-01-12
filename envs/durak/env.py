@@ -623,10 +623,10 @@ class DurakEnv(Env):
             return
         order = [self._attacker[i].item(), self._defender[i].item()]
 
-        while self._deck_pos[i] < _NUM_CARDS -1:
+        while self._deck_pos[i] < _NUM_CARDS:
             for p in order:
-                if self._count_hand(i, p) < _CARDS_PER_PLAYER and self._deck_pos[i] < _NUM_CARDS -1:
-                    # draw from top (except the very last card is the trump face up)
+                if self._count_hand(i, p) < _CARDS_PER_PLAYER and self._deck_pos[i] < _NUM_CARDS:
+                    # draw from top
                     c = self._decks[i, self._deck_pos[i]].item()
                     self._deck_pos[i] += 1
                     self._hands[i, p, c] = True
