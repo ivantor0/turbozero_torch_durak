@@ -208,7 +208,7 @@ class DurakEnv(Env):
             if not chance_mask.any():
                 break
             self._apply_chance_logic(chance_mask)
-            logger.debug(f"Processed chance steps for {chance_mask.sum().item()} environments.")
+            logger.info(f"Processed chance steps for {chance_mask.sum().item()} environments.")
 
     def _apply_chance_logic(self, mask: torch.Tensor):
         idxs = torch.nonzero(mask, as_tuple=False).flatten()
@@ -218,7 +218,8 @@ class DurakEnv(Env):
                 next_card = self._decks[i, self._deck_pos[i]]
                 player_idx = self._cards_dealt[i] % _NUM_PLAYERS
                 self._hands[i, player_idx, next_card] = True
-                logger.debug(f"Dealt {card_to_string(next_card.item())} to Player {player_idx} in Env {i}.")
+                if i == 0:
+                    logger.info(f"Dealt {card_to_string(next_card.item())} to Player {player_idx} in Env {i}.")
                 self._deck_pos[i]    += 1
                 self._cards_dealt[i] += 1
             else:
@@ -227,7 +228,8 @@ class DurakEnv(Env):
                     self._trump_card[i] = self._decks[i, _NUM_CARDS - 1]
                     tsuit = suit_of(self._trump_card[i].item())
                     self._trump_suit[i] = tsuit
-                    logger.info(f"Trump card for Env {i} is {card_to_string(self._trump_card[i].item())}.")
+                    if i == 0:
+                        logger.info(f"Trump card for Env {i} is {card_to_string(self._trump_card[i].item())}.")
                     self._decide_first_attacker(i)
                     self._round_starter[i] = self._attacker[i]
                     self._phase[i] = ATTACK
@@ -257,11 +259,13 @@ class DurakEnv(Env):
                 if has_cards[i,0] and not has_cards[i,1]:
                     final_results[i,0] = -1.0
                     final_results[i,1] =  1.0
-                    logger.debug(f"Env {i}: Player 0 loses, Player 1 wins.")
+                    if i == 0:
+                        logger.info(f"Env {i} (step {self._step_count[i]}) Player 0 loses, Player 1 wins.")
                 elif has_cards[i,1] and not has_cards[i,0]:
                     final_results[i,1] = -1.0
                     final_results[i,0] =  1.0
-                    logger.debug(f"Env {i}: Player 1 loses, Player 0 wins.")
+                    if i == 0:
+                        logger.info(f"Env {i} (step {self._step_count[i]}) Player 1 loses, Player 0 wins.")
 
         # Case 2: both have cards => [0,0]
         mask_2 = (count_with_cards == 2) & done
@@ -277,7 +281,8 @@ class DurakEnv(Env):
                     atk = self._attacker[i].item()
                     final_results[i, atk] = 1.0
                     final_results[i, 1 - atk] = -1.0
-                    logger.debug(f"Env {i}: Deck empty. Player {atk} wins, Player {1 - atk} loses.")
+                    if i == 0:
+                        logger.info(f"Env {i} (step {self._step_count[i]}) Deck empty. Player {atk} wins, Player {1 - atk} loses.")
                 else:
                     # 0,0
                     pass
@@ -367,7 +372,8 @@ class DurakEnv(Env):
                         row = self._find_first_empty_attack_row(i)
                         if row != -1:
                             self._table_cards[i, row, 0] = act
-                            logger.debug(f"Env {i}: Player {p} attacks with {card_to_string(act)}.")
+                            if i == 0:
+                                logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} attacks with {card_to_string(act)}.")
                         self._phase[i] = ATTACK
 
                     elif ph == DEFENSE and p == self._defender[i].item():
@@ -376,9 +382,11 @@ class DurakEnv(Env):
                             if self._can_defend_card(i, act, att_card):
                                 self._hands[i, p, act] = False
                                 self._table_cards[i, row, 1] = act
-                                logger.debug(f"Env {i}: Player {p} defends with {card_to_string(act)} against {card_to_string(att_card)}.")
+                                if i == 0:
+                                    logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} defends with {card_to_string(act)} against {card_to_string(att_card)}.")
                                 if self._all_covered(self._table_cards[i]):
                                     self._phase[i] = ADDITIONAL
+
 
     def _check_game_over(self, mask: torch.Tensor):
         idxs = torch.nonzero(mask, as_tuple=False).flatten()
@@ -391,13 +399,15 @@ class DurakEnv(Env):
             deck_rem = _NUM_CARDS - self._deck_pos[i].item()
             if (c0 == 0 or c1 == 0) and deck_rem == 0:
                 self._game_over[i] = True
-                logger.info(f"Env {i}: Game over due to empty deck and player hands.")
+                if i == 0:
+                    logger.info(f"Env {i} (step {self._step_count[i]}) Game over due to empty deck and player hands.")
                 continue
             # 2) if both have 0 => if deck empty => done, else refill
             if c0 == 0 and c1 == 0:
                 if deck_rem == 0:
                     self._game_over[i] = True
-                    logger.info(f"Env {i}: Game over as both players have no cards and deck is empty.")
+                    if i == 0:
+                        logger.info(f"Env {i} (step {self._step_count[i]}) Game over as both players have no cards and deck is empty.")
                 else:
                     self._refill_hands(i)
 
@@ -411,13 +421,14 @@ class DurakEnv(Env):
             ac, dc = table[row,0].item(), table[row,1].item()
             if ac >= 0:
                 self._hands[i, def_p, ac] = True
-                logger.debug(f"Env {i}: Player {def_p} takes back {card_to_string(ac)}.")
+                if i == 0:
+                    logger.info(f"Env {i} (step {self._step_count[i]}) Player {def_p} takes back {card_to_string(ac)}.")
             if dc >= 0:
                 self._hands[i, def_p, dc] = True
-                logger.debug(f"Env {i}: Player {def_p} takes back {card_to_string(dc)}.")
+                if i == 0:
+                    logger.info(f"Env {i} (step {self._step_count[i]}) Player {def_p} takes back {card_to_string(dc)}.")
         table.fill_(-1)
         self._phase[i] = ATTACK
-        logger.info(f"Env {i}: Defender takes cards and phase set to ATTACK.")
         self._refill_hands(i)
 
     def _attacker_finishes_attack(self, i: int):
@@ -425,7 +436,6 @@ class DurakEnv(Env):
         if self._num_cards_on_table(table) == 0:
             return
         self._phase[i] = DEFENSE
-        logger.info(f"Env {i}: Attacker finishes attack. Phase set to DEFENSE.")
 
     def _defender_finishes_defense(self, i: int):
         table = self._table_cards[i]
@@ -437,17 +447,16 @@ class DurakEnv(Env):
                 ac, dc = table[row,0].item(), table[row,1].item()
                 if ac >= 0:
                     self._discard[i, ac] = True
-                    logger.debug(f"Env {i}: Discarded {card_to_string(ac)}.")
+                    logger.info(f"Env {i} (step {self._step_count[i]}) Discarded {card_to_string(ac)}.")
                 if dc >= 0:
                     self._discard[i, dc] = True
-                    logger.debug(f"Env {i}: Discarded {card_to_string(dc)}.")
+                    logger.info(f"Env {i} (step {self._step_count[i]}) Discarded {card_to_string(dc)}.")
             table.fill_(-1)
             # swap roles
             old_att = self._attacker[i].item()
             old_def = self._defender[i].item()
             self._attacker[i] = old_def
             self._defender[i] = old_att
-            logger.info(f"Env {i}: Roles swapped. Attacker is now Player {old_def}, Defender is Player {old_att}.")
             self._refill_hands(i)
             self._phase[i] = ATTACK
 
@@ -461,7 +470,8 @@ class DurakEnv(Env):
                     c = self._decks[i, self._deck_pos[i]].item()
                     self._deck_pos[i] += 1
                     self._hands[i, p, c] = True
-                    logger.debug(f"Env {i}: Player {p} refilled with {card_to_string(c)}.")
+                    if i == 0:
+                        logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} refilled with {card_to_string(c)}.")
             # If both are full, break
             if (self._count_hand(i, order[0]) >= _CARDS_PER_PLAYER and
                 self._count_hand(i, order[1]) >= _CARDS_PER_PLAYER):
@@ -483,7 +493,8 @@ class DurakEnv(Env):
                         who = p
         self._attacker[i] = who
         self._defender[i] = 1 - who
-        logger.info(f"Env {i}: Player {who} is the first attacker based on {card_to_string(self._trump_card[i].item())}.")
+        if i == 0:
+            logger.info(f"Env {i} (step {self._step_count[i]}) Player {who} is the first attacker based on {card_to_string(self._trump_card[i].item())}.")
 
     # -------------- Helpers --------------
     def _current_player_ids(self) -> torch.Tensor:
@@ -610,7 +621,8 @@ class DurakEnv(Env):
             self._round_starter[i] = 0
             self._game_over[i] = False
             self._step_count[i] = 0
-            logger.info(f"Env {i}: State reset after termination.")
+            if i == 0:
+                logger.info(f"Env {i} (step {self._step_count[i]}) State reset after termination.")
 
         self.update_terminated()
 
