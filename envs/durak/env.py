@@ -365,8 +365,6 @@ class DurakEnv(Env):
                         row = self._find_first_empty_attack_row(i)
                         if row != -1:
                             self._table_cards[i, row, 0] = act
-                            if i == 0:
-                                logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} attacks with {card_to_string(act)}.")
                         self._phase[i] = ATTACK
 
                     elif ph == DEFENSE and p == self._defender[i].item():
@@ -375,8 +373,6 @@ class DurakEnv(Env):
                             if self._can_defend_card(i, act, att_card):
                                 self._hands[i, p, act] = False
                                 self._table_cards[i, row, 1] = act
-                                if i == 0:
-                                    logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} defends with {card_to_string(act)} against {card_to_string(att_card)}.")
                                 if self._all_covered(self._table_cards[i]):
                                     self._phase[i] = ADDITIONAL
 
