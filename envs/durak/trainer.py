@@ -8,10 +8,6 @@ from core.utils.history import TrainingMetrics
 from envs.durak.collector import DurakCollector
 from core.test.tester import Tester
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 
 class DurakTrainer(Trainer):
     """
@@ -54,32 +50,25 @@ class DurakTrainer(Trainer):
         """
         Override the collect_episodes method to add logging.
         """
-        logger.info("Starting episode collection...")
         super().collect_episodes()
-        logger.info("Episode collection completed.")
 
     def assign_rewards(self, terminated_episodes, terminated):
         """
         Override to add logging when rewards are assigned.
         """
-        logger.info(f"Assigning rewards for {terminated.sum().item()} terminated episodes.")
         episodes = super().assign_rewards(terminated_episodes, terminated)
-        logger.info(f"Rewards assigned for {len(episodes)} episodes.")
         return episodes
 
     def populate_replay_memory(self, episodes):
         """
         Override to add logging when populating replay memory.
         """
-        logger.info(f"Populating replay memory with {len(episodes)} episodes.")
         super().populate_replay_memory(episodes)
-        logger.info("Replay memory population completed.")
 
     def train_loop(self):
         """
         Override the train_loop to add logging at each major step.
         """
-        logger.info("Training loop started.")
         while not self.should_stop():
             self.collect_episodes()
             episodes = self.collector.get_terminated_episodes()
@@ -88,19 +77,6 @@ class DurakTrainer(Trainer):
                 self.populate_replay_memory(episodes)
             self.update_model()
             self.evaluate()
-            logger.info("Training iteration completed.")
-        logger.info("Training loop finished.")
-
-    def print_env_state(self, env_id: int):
-        """
-        Print the state of a specific environment for debugging.
-        """
-        if env_id >= self.collector.envs.parallel_envs:
-            logger.warning(f"Environment ID {env_id} is out of bounds.")
-            return
-
-        env_state = self.collector.envs.get_state(env_id)
-        logger.info(f"State of Environment {env_id}: {env_state}")
 
     def add_collection_metrics(self, episodes):
         # For each finished episode, we can record final reward

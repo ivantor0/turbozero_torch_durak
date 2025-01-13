@@ -1,5 +1,3 @@
-# envs/durak/env.py
-
 import torch
 import numpy as np
 import logging
@@ -62,7 +60,7 @@ class DurakEnvConfig(EnvConfig):
 
 class DurakEnv(Env):
     """
-    A vectorized Durak environment with enhanced logging for debugging.
+    A vectorized Durak environment.
     """
 
     def __init__(
@@ -132,13 +130,11 @@ class DurakEnv(Env):
     def reset(self, seed: Optional[int] = None) -> int:
         if seed is not None:
             torch.manual_seed(seed)
-            logger.info(f"Environment reset with seed={seed}")
 
         # Shuffle decks
         rand_vals = torch.rand(self.parallel_envs, _NUM_CARDS, device=self.device)
         sort_idx  = torch.argsort(rand_vals, dim=1)
         self._decks = sort_idx.long()
-        logger.info("Decks shuffled.")
 
         self._deck_pos.zero_()
         self._cards_dealt.zero_()
@@ -198,216 +194,24 @@ class DurakEnv(Env):
 
         return self.terminated
 
-    # -------------------- CHANCE HANDLING --------------------
-    def _process_all_chance_steps(self, mask: torch.Tensor):
-        """
-        Repeatedly apply dealing logic until no environment is in CHANCE.
-        """
-        for _ in range(40):  # safeguard
-            chance_mask = mask & (self._phase == CHANCE) & (~self._game_over)
-            if not chance_mask.any():
-                break
-            self._apply_chance_logic(chance_mask)
-            logger.info(f"Processed chance steps for {chance_mask.sum().item()} environments.")
-
-    def _apply_chance_logic(self, mask: torch.Tensor):
-        idxs = torch.nonzero(mask, as_tuple=False).flatten()
-        for i in idxs:
-            if self._cards_dealt[i] < _CARDS_PER_PLAYER * _NUM_PLAYERS:
-                # Deal next card
-                next_card = self._decks[i, self._deck_pos[i]]
-                player_idx = self._cards_dealt[i] % _NUM_PLAYERS
-                self._hands[i, player_idx, next_card] = True
-                if i == 0:
-                    logger.info(f"Dealt {card_to_string(next_card.item())} to Player {player_idx} in Env {i}.")
-                self._deck_pos[i]    += 1
-                self._cards_dealt[i] += 1
-            else:
-                # Reveal the last card as trump if not done
-                if self._trump_card[i] < 0:
-                    self._trump_card[i] = self._decks[i, _NUM_CARDS - 1]
-                    tsuit = suit_of(self._trump_card[i].item())
-                    self._trump_suit[i] = tsuit
-                    if i == 0:
-                        logger.info(f"Trump card for Env {i} is {card_to_string(self._trump_card[i].item())}.")
-                    self._decide_first_attacker(i)
-                    self._round_starter[i] = self._attacker[i]
-                    self._phase[i] = ATTACK
-
-    # -------------------- REWARD LOGIC --------------------
-    def get_rewards(self, player_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if player_ids is None:
-            player_ids = self.cur_players
-
-        rew = torch.zeros((self.parallel_envs,), device=self.device, dtype=torch.float32)
-        done = self._game_over
-        if not done.any():
-            return rew
-
-        # Count cards in each player's hand
-        hands_count = self._hands.sum(dim=2)  # shape [N,2]
-        has_cards = (hands_count > 0)
-        count_with_cards = has_cards.sum(dim=1)
-
-        final_results = torch.zeros((self.parallel_envs, 2), device=self.device)
-
-        # Case 1: exactly 1 player has cards => that player is loser => -1, other => +1
-        mask_1 = (count_with_cards == 1) & done
-        if mask_1.any():
-            idxs = torch.nonzero(mask_1, as_tuple=False).flatten()
-            for i in idxs:
-                if has_cards[i,0] and not has_cards[i,1]:
-                    final_results[i,0] = -1.0
-                    final_results[i,1] =  1.0
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Player 0 loses, Player 1 wins.")
-                elif has_cards[i,1] and not has_cards[i,0]:
-                    final_results[i,1] = -1.0
-                    final_results[i,0] =  1.0
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Player 1 loses, Player 0 wins.")
-
-        # Case 2: both have cards => [0,0]
-        mask_2 = (count_with_cards == 2) & done
-        final_results[mask_2, :] = 0.0
-
-        # Case 3: none have cards => if deck empty => attacker=winner, else [0,0]
-        mask_0 = (count_with_cards == 0) & done
-        if mask_0.any():
-            idxs = torch.nonzero(mask_0, as_tuple=False).flatten()
-            for i in idxs:
-                deck_remaining = _NUM_CARDS - self._deck_pos[i].item()
-                if deck_remaining <= 0:
-                    atk = self._attacker[i].item()
-                    final_results[i, atk] = 1.0
-                    final_results[i, 1 - atk] = -1.0
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Deck empty. Player {atk} wins, Player {1 - atk} loses.")
-                else:
-                    # 0,0
-                    pass
-
-        for i in range(self.parallel_envs):
-            if done[i]:
-                p = player_ids[i].item()
-                rew[i] = final_results[i, p]
-            else:
-                rew[i] = 0.0
-        return rew
-
-    # -------------------- LEGAL ACTIONS --------------------
-    def get_legal_actions(self) -> torch.Tensor:
-        """
-        Return a [N,39] bool mask of valid actions
-        """
-        legal = torch.zeros((self.parallel_envs, _NUM_CARDS+3), dtype=torch.bool, device=self.device)
-
-        done_or_chance = (self._game_over | (self._phase == CHANCE))
-        idxs = torch.nonzero(~done_or_chance, as_tuple=False).flatten()
-
-        for i in idxs:
-            ph = self._phase[i].item()
-            cur_p = self._current_player_id(i)
-            hand_mask = self._hands[i, cur_p]  # shape [36], True if in hand
-            hand_cards = torch.nonzero(hand_mask, as_tuple=False).flatten().tolist()
-
-            if ph in (ATTACK, ADDITIONAL) and (cur_p == self._attacker[i].item()):
-                table_occ = self._table_cards[i]
-                n_placed = self._num_cards_on_table(table_occ)
-                if n_placed == 0:
-                    for c in hand_cards:
-                        legal[i, c] = True
-                else:
-                    # can place only if rank in table, and not exceeding _CARDS_PER_PLAYER or defender's hand size
-                    if n_placed < _CARDS_PER_PLAYER and self._count_hand(i, self._defender[i].item()) > 0:
-                        ranks_on_table = set()
-                        for row in range(6):
-                            ac, dc = table_occ[row,0].item(), table_occ[row,1].item()
-                            if ac >= 0:
-                                ranks_on_table.add(rank_of(ac))
-                            if dc >= 0:
-                                ranks_on_table.add(rank_of(dc))
-                        for c in hand_cards:
-                            if rank_of(c) in ranks_on_table:
-                                legal[i, c] = True
-                if n_placed > 0:
-                    legal[i, FINISH_ATTACK] = True
-
-            elif ph == DEFENSE and (cur_p == self._defender[i].item()):
-                if self._all_covered(self._table_cards[i]):
-                    legal[i, FINISH_DEFENSE] = True
-                else:
-                    legal[i, TAKE_CARDS] = True
-                    row, attc = self._find_earliest_uncovered(self._table_cards[i])
-                    if row != -1 and attc >= 0:
-                        for c in hand_cards:
-                            if self._can_defend_card(i, c, attc):
-                                legal[i, c] = True
-
-        return legal
-
-    # -------------------- STEP LOGIC --------------------
-    def _apply_actions(self, idxs: torch.Tensor, actions: torch.Tensor):
-        for k, i in enumerate(idxs):
-            if self._game_over[i]:
-                continue
-            ph = self._phase[i].item()
-            p  = self._current_player_id(i)
-            act= actions[k].item()
-
-            if act >= _NUM_CARDS:
-                # Special action
-                if act == TAKE_CARDS:
-                    self._defender_takes_cards(i)
-                elif act == FINISH_ATTACK:
-                    self._attacker_finishes_attack(i)
-                elif act == FINISH_DEFENSE:
-                    self._defender_finishes_defense(i)
-            else:
-                # playing a card from hand
-                if self._hands[i, p, act]:
-                    if ph in (ATTACK, ADDITIONAL) and p == self._attacker[i].item():
-                        # Attacker places a card
-                        self._hands[i, p, act] = False
-                        row = self._find_first_empty_attack_row(i)
-                        if row != -1:
-                            self._table_cards[i, row, 0] = act
-                            if i == 0:
-                                logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} attacks with {card_to_string(act)}.")
-                        self._phase[i] = ATTACK
-
-                    elif ph == DEFENSE and p == self._defender[i].item():
-                        row, att_card = self._find_earliest_uncovered(self._table_cards[i])
-                        if row != -1 and att_card >= 0:
-                            if self._can_defend_card(i, act, att_card):
-                                self._hands[i, p, act] = False
-                                self._table_cards[i, row, 1] = act
-                                if i == 0:
-                                    logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} defends with {card_to_string(act)} against {card_to_string(att_card)}.")
-                                if self._all_covered(self._table_cards[i]):
-                                    self._phase[i] = ADDITIONAL
-
-
     def _check_game_over(self, mask: torch.Tensor):
         idxs = torch.nonzero(mask, as_tuple=False).flatten()
         for i in idxs:
             if self._game_over[i]:
                 continue
             # 1) If either has 0 cards AND deck is empty => done
-            c0 = self._count_hand(i,0)
-            c1 = self._count_hand(i,1)
+            c0 = self._count_hand(i, 0)
+            c1 = self._count_hand(i, 1)
             deck_rem = _NUM_CARDS - self._deck_pos[i].item()
             if (c0 == 0 or c1 == 0) and deck_rem == 0:
                 self._game_over[i] = True
-                if i == 0:
-                    logger.info(f"Env {i} (step {self._step_count[i]}) Game over due to empty deck and player hands.")
+                logger.info(f"Env {i} (step {self._step_count[i]}) Game over due to empty deck and player hands.")
                 continue
             # 2) if both have 0 => if deck empty => done, else refill
             if c0 == 0 and c1 == 0:
                 if deck_rem == 0:
                     self._game_over[i] = True
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Game over as both players have no cards and deck is empty.")
+                    logger.info(f"Env {i} (step {self._step_count[i]}) Game over as both players have no cards and deck is empty.")
                 else:
                     self._refill_hands(i)
 
@@ -421,12 +225,8 @@ class DurakEnv(Env):
             ac, dc = table[row,0].item(), table[row,1].item()
             if ac >= 0:
                 self._hands[i, def_p, ac] = True
-                if i == 0:
-                    logger.info(f"Env {i} (step {self._step_count[i]}) Player {def_p} takes back {card_to_string(ac)}.")
             if dc >= 0:
                 self._hands[i, def_p, dc] = True
-                if i == 0:
-                    logger.info(f"Env {i} (step {self._step_count[i]}) Player {def_p} takes back {card_to_string(dc)}.")
         table.fill_(-1)
         self._phase[i] = ATTACK
         self._refill_hands(i)
@@ -447,10 +247,8 @@ class DurakEnv(Env):
                 ac, dc = table[row,0].item(), table[row,1].item()
                 if ac >= 0:
                     self._discard[i, ac] = True
-                    logger.info(f"Env {i} (step {self._step_count[i]}) Discarded {card_to_string(ac)}.")
                 if dc >= 0:
                     self._discard[i, dc] = True
-                    logger.info(f"Env {i} (step {self._step_count[i]}) Discarded {card_to_string(dc)}.")
             table.fill_(-1)
             # swap roles
             old_att = self._attacker[i].item()
@@ -470,8 +268,6 @@ class DurakEnv(Env):
                     c = self._decks[i, self._deck_pos[i]].item()
                     self._deck_pos[i] += 1
                     self._hands[i, p, c] = True
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Player {p} refilled with {card_to_string(c)}.")
             # If both are full, break
             if (self._count_hand(i, order[0]) >= _CARDS_PER_PLAYER and
                 self._count_hand(i, order[1]) >= _CARDS_PER_PLAYER):
@@ -493,8 +289,6 @@ class DurakEnv(Env):
                         who = p
         self._attacker[i] = who
         self._defender[i] = 1 - who
-        if i == 0:
-            logger.info(f"Env {i} (step {self._step_count[i]}) Player {who} is the first attacker based on {card_to_string(self._trump_card[i].item())}.")
 
     # -------------- Helpers --------------
     def _current_player_ids(self) -> torch.Tensor:
