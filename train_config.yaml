@@ -1,0 +1,40 @@
+run_tag: "durak_hello_world"
+env_config:
+  env_type: "durak"
+model_config:
+  res_channels: 8
+  res_blocks: 3
+  kernel_size: 3
+  value_fc_size: 32
+  value_output_activation: "tanh0to1"
+train_mode_config:
+  algo_config:
+    name: "alphazero"
+    temperature: 1.0
+    num_iters: 200
+    max_nodes: 200
+    puct_coeff: 1.0
+    dirichlet_alpha: 0.85
+    dirichlet_epsilon: 0.25
+  learning_rate: 0.1
+  lr_decay_gamma: 0.95
+  momentum: 0.9
+  c_reg: 0.001
+  replay_memory_max_size: 2000
+  replay_memory_min_size: 512
+  parallel_envs: 256
+  policy_factor: 1.0
+  minibatch_size: 256
+  episodes_per_epoch: 256
+  episodes_per_minibatch: 16
+  test_config:
+    algo_config:
+      name: "alphazero"
+      temperature: 0.0
+      num_iters: 200
+      max_nodes: 200
+      puct_coeff: 1.0
+      dirichlet_alpha: 0.1
+      dirichlet_epsilon: 0.0
+    episodes_per_epoch: 64
+    baselines: []

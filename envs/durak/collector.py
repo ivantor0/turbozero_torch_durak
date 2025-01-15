@@ -1,13 +1,12 @@
 # envs/durak/collector.py
 
 import torch
-import logging
 from core.algorithms.evaluator import TrainableEvaluator
 from core.train.collector import Collector
 
 class DurakCollector(Collector):
     """
-    Collector specialized for Durak with added logging for debugging.
+    Collector specialized for Durak.
     """
 
     def __init__(self, evaluator: TrainableEvaluator, episode_memory_device: torch.device):
@@ -15,7 +14,7 @@ class DurakCollector(Collector):
 
     def assign_rewards(self, terminated_episodes, terminated):
         """
-        Assign rewards to terminated episodes with logging.
+        Assign rewards to terminated episodes.
         """
         episodes = []
         if terminated.any():
@@ -36,7 +35,7 @@ class DurakCollector(Collector):
 
     def postprocess(self, terminated_episodes):
         """
-        Postprocess terminated episodes with logging.
+        Postprocess terminated episodes.
         """
         inputs, probs, rewards, legal_actions = zip(*terminated_episodes)
         return list(zip(inputs, probs, rewards, legal_actions))

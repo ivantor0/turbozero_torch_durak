@@ -2,20 +2,11 @@
 
 import torch
 import numpy as np
-import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from core.env import Env, EnvConfig
 from core.utils.utils import rand_argmax_2d
-
-# Configure logging
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = logging.StreamHandler()
-formatter = logging.Formatter('[%(levelname)s] %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
 
 # Card definitions
 _NUM_PLAYERS = 2
@@ -171,8 +162,6 @@ class DurakEnv(Env):
 
         # Force-terminate any environment that hits _MAX_STEPS
         overlimit = (self._step_count >= _MAX_STEPS) & (~self._game_over)
-        if overlimit.any():
-            logger.info(f"Terminating {overlimit.sum().item()} environments due to step limit.")
         self._game_over |= overlimit
 
         active = ~self._game_over
@@ -191,8 +180,6 @@ class DurakEnv(Env):
 
         # Log termination
         terminated_envs = torch.nonzero(self.terminated & active, as_tuple=False).flatten()
-        if terminated_envs.numel() > 0:
-            logger.info(f"{terminated_envs.numel()} environments terminated.")
 
         return self.terminated
 
@@ -252,13 +239,9 @@ class DurakEnv(Env):
                 if has_cards[i,0] and not has_cards[i,1]:
                     final_results[i,0] = -1.0
                     final_results[i,1] =  1.0
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Player 0 loses, Player 1 wins.")
                 elif has_cards[i,1] and not has_cards[i,0]:
                     final_results[i,1] = -1.0
                     final_results[i,0] =  1.0
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Player 1 loses, Player 0 wins.")
 
         # Case 2: both have cards => [0,0]
         mask_2 = (count_with_cards == 2) & done
@@ -274,8 +257,6 @@ class DurakEnv(Env):
                     atk = self._attacker[i].item()
                     final_results[i, atk] = 1.0
                     final_results[i, 1 - atk] = -1.0
-                    if i == 0:
-                        logger.info(f"Env {i} (step {self._step_count[i]}) Deck empty. Player {atk} wins, Player {1 - atk} loses.")
                 else:
                     # 0,0
                     pass
@@ -388,13 +369,11 @@ class DurakEnv(Env):
             deck_rem = _NUM_CARDS - self._deck_pos[i].item()
             if (c0 == 0 or c1 == 0) and deck_rem == 0:
                 self._game_over[i] = True
-                logger.info(f"Env {i} (step {self._step_count[i]}) Game over due to empty deck and player hands.")
                 continue
             # 2) if both have 0 => if deck empty => done, else refill
             if c0 == 0 and c1 == 0:
                 if deck_rem == 0:
                     self._game_over[i] = True
-                    logger.info(f"Env {i} (step {self._step_count[i]}) Game over as both players have no cards and deck is empty.")
                 else:
                     self._refill_hands(i)
 
@@ -598,8 +577,6 @@ class DurakEnv(Env):
             self._round_starter[i] = 0
             self._game_over[i] = False
             self._step_count[i] = 0
-            if i == 0:
-                logger.info(f"Env {i} (step {self._step_count[i]}) State reset after termination.")
 
         self.update_terminated()
 
