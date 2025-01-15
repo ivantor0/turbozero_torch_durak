@@ -6,7 +6,7 @@ from core.train.collector import Collector
 
 class DurakCollector(Collector):
     """
-    Collector specialized for Durak.
+    Collector specialized for Durak, assigns final environment reward to each transition in the episode.
     """
 
     def __init__(self, evaluator: TrainableEvaluator, episode_memory_device: torch.device):

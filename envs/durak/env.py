@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from core.env import Env, EnvConfig
-from core.utils.utils import rand_argmax_2d
 
 # Card definitions
 _NUM_PLAYERS = 2
@@ -67,7 +66,7 @@ class DurakEnv(Env):
         # Policy shape = 39 => 36 card plays + 3 special moves
         # Value shape = (1,)
         state_shape  = torch.Size([1, 1, 1])
-        policy_shape = torch.Size([_NUM_CARDS + 3])
+        policy_shape = torch.Size([_NUM_CARDS + 3])  # 39 possible actions
         value_shape  = torch.Size([1])
 
         super().__init__(
@@ -178,9 +177,6 @@ class DurakEnv(Env):
         self.terminated = self._game_over
         self.cur_players = self._current_player_ids()
 
-        # Log termination
-        terminated_envs = torch.nonzero(self.terminated & active, as_tuple=False).flatten()
-
         return self.terminated
 
     # -------------------- CHANCE HANDLING --------------------
@@ -202,7 +198,7 @@ class DurakEnv(Env):
                 next_card = self._decks[i, self._deck_pos[i]]
                 player_idx = self._cards_dealt[i] % _NUM_PLAYERS
                 self._hands[i, player_idx, next_card] = True
-                self._deck_pos[i]    += 1
+                self._deck_pos[i] += 1
                 self._cards_dealt[i] += 1
             else:
                 # Reveal the last card as trump if not done
@@ -216,57 +212,78 @@ class DurakEnv(Env):
 
     # -------------------- REWARD LOGIC --------------------
     def get_rewards(self, player_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Return final +1/-1 from the perspective of each environment's current player if game is done with a winner/loser,
+        else 0 for ongoing or draws/timeouts.
+        """
         if player_ids is None:
             player_ids = self.cur_players
 
         rew = torch.zeros((self.parallel_envs,), device=self.device, dtype=torch.float32)
         done = self._game_over
         if not done.any():
-            return rew
+            return rew  # no environment ended, so 0 reward
 
-        # Count cards in each player's hand
-        hands_count = self._hands.sum(dim=2)  # shape [N,2]
+        # For each done environment, decide final result from vantage of player_ids[i].
+        # We'll replicate the single-state logic: if exactly one player has cards => that player is loser => -1.
+        # else if a single player is out => that player is winner => +1, etc.
+        # If we forced a time-out or a scenario with 2 players with cards => 0.
+        hands_count = self._hands.sum(dim=2)  # [N,2], how many cards each player holds
         has_cards = (hands_count > 0)
         count_with_cards = has_cards.sum(dim=1)
 
+        # We'll build final_results Nx2: final_results[i, p] is that player's payoff in environment i.
         final_results = torch.zeros((self.parallel_envs, 2), device=self.device)
 
-        # Case 1: exactly 1 player has cards => that player is loser => -1, other => +1
-        mask_1 = (count_with_cards == 1) & done
-        if mask_1.any():
-            idxs = torch.nonzero(mask_1, as_tuple=False).flatten()
-            for i in idxs:
-                if has_cards[i,0] and not has_cards[i,1]:
-                    final_results[i,0] = -1.0
-                    final_results[i,1] =  1.0
-                elif has_cards[i,1] and not has_cards[i,0]:
-                    final_results[i,1] = -1.0
-                    final_results[i,0] =  1.0
+        idxs = torch.nonzero(done, as_tuple=False).flatten()
+        for i in idxs:
+            c0 = hands_count[i,0].item()
+            c1 = hands_count[i,1].item()
+            deck_rem = _NUM_CARDS - self._deck_pos[i].item()
+            # Check forced timeout
+            if self._step_count[i].item() >= _MAX_STEPS:
+                # If we want to penalize stalling, do final_results[i,:] = -1
+                # Or treat it as a draw => 0. We'll do draw:
+                final_results[i, :] = 0.0
+                continue
 
-        # Case 2: both have cards => [0,0]
-        mask_2 = (count_with_cards == 2) & done
-        final_results[mask_2, :] = 0.0
-
-        # Case 3: none have cards => if deck empty => attacker=winner, else [0,0]
-        mask_0 = (count_with_cards == 0) & done
-        if mask_0.any():
-            idxs = torch.nonzero(mask_0, as_tuple=False).flatten()
-            for i in idxs:
-                deck_remaining = _NUM_CARDS - self._deck_pos[i].item()
-                if deck_remaining <= 0:
+            # Evaluate normal end
+            if (c0 == 0 and c1 == 0):
+                # both out => if deck empty => attacker=winner => +1, else draw=0
+                if deck_rem <= 0:
                     atk = self._attacker[i].item()
-                    final_results[i, atk] = 1.0
+                    final_results[i, atk] =  1.0
                     final_results[i, 1 - atk] = -1.0
                 else:
-                    # 0,0
-                    pass
+                    # draw
+                    final_results[i, :] = 0.0
+            elif c0 == 0 and c1 > 0:
+                # Player0 is out => p0 is winner => +1, p1 = -1
+                final_results[i,0] =  1.0
+                final_results[i,1] = -1.0
+            elif c1 == 0 and c0 > 0:
+                # Player1 is out => p1 is winner => +1, p0 = -1
+                final_results[i,1] =  1.0
+                final_results[i,0] = -1.0
+            elif (c0 > 0 and c1 > 0 and deck_rem <= 0):
+                # both have cards and no deck => scenario might happen => treat as 0
+                final_results[i, :] = 0.0
+            else:
+                # Any other done scenario => treat as draw => 0
+                final_results[i, :] = 0.0
 
+        # Now pick the perspective of player_ids[i]
         for i in range(self.parallel_envs):
             if done[i]:
                 p = player_ids[i].item()
+                # If the environment ended while it was chance or after the final move,
+                # we fallback to environment's "current" perspective (which is attacker or defender).
+                # If p == -1 or 0 in chance, or we do a safe clamp:
+                p = max(0, min(1, p))
                 rew[i] = final_results[i, p]
             else:
                 rew[i] = 0.0
+
         return rew
 
     # -------------------- LEGAL ACTIONS --------------------
@@ -363,13 +380,16 @@ class DurakEnv(Env):
         for i in idxs:
             if self._game_over[i]:
                 continue
+
             # 1) If either has 0 cards AND deck is empty => done
             c0 = self._count_hand(i, 0)
             c1 = self._count_hand(i, 1)
             deck_rem = _NUM_CARDS - self._deck_pos[i].item()
+
             if (c0 == 0 or c1 == 0) and deck_rem == 0:
                 self._game_over[i] = True
                 continue
+
             # 2) if both have 0 => if deck empty => done, else refill
             if c0 == 0 and c1 == 0:
                 if deck_rem == 0:
