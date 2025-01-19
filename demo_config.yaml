@@ -1,0 +1,17 @@
+env_config:
+  env_type: 'durak'
+demo_config:
+  evaluator1_config:
+    algo_config:
+      name: "alphazero"
+      temperature: 0.0
+      num_iters: 200
+      max_nodes: 200
+      puct_coeff: 1.0
+      dirichlet_alpha: 0.1
+      dirichlet_epsilon: 0.0
+    checkpoint: './checkpoints/durak_hello_world/5.pt'
+  evaluator2_config:
+    algo_config:
+      name: 'human'
+  manual_step: False
