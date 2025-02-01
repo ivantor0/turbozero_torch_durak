@@ -1,21 +1,20 @@
+## File: turbozero.py
 
 from typing import List, Tuple, Union
 import torch
 import logging
 import argparse
 import sys
-from core.algorithms.load import init_evaluator
-from core.demo.demo import Demo
+import yaml
+from core.algorithms.load import init_evaluator, load_checkpoint, load_model_and_optimizer_from_checkpoint
 from core.demo.load import init_demo
 from core.resnet import ResNetConfig, TurboZeroResnet
 from core.test.tester import  Tester
 from core.test.tournament.tournament import Tournament, TournamentPlayer, load_tournament as load_tournament_checkpoint
-from core.train.trainer import Trainer, init_history
+from core.train.trainer import Trainer, init_history, init_trainer
 from core.utils.checkpoint import load_checkpoint, load_model_and_optimizer_from_checkpoint
+from envs.load import init_env, init_collector, init_tester
 import matplotlib.pyplot as plt
-import yaml
-
-from envs.load import init_collector, init_env, init_tester, init_trainer
 
 def setup_logging(logfile: str):
     if logfile:
@@ -40,7 +39,6 @@ def load_trainer_nb(
         checkpoint=checkpoint
     )
     setup_logging(args.logfile)
-    
     trainer = load_trainer(args, interactive=True)
     plt.close('all')
     return trainer
@@ -87,12 +85,11 @@ def load_tournament_nb(
 
 def load_demo_nb(
     config_file: str
-) -> Demo:
+) -> 'Demo':
     args = argparse.Namespace(
         config=config_file
     )
-    return load_demo(args)
-    
+    return init_demo(args)
 
 def load_config(config_file: str) -> dict:
     if config_file:
@@ -103,7 +100,6 @@ def load_config(config_file: str) -> dict:
         exit(1)
     return raw_config
 
-
 def load_trainer(args, interactive: bool) -> Trainer:
     raw_config = load_config(args.config)
 
@@ -112,7 +108,7 @@ def load_trainer(args, interactive: bool) -> Trainer:
         torch.backends.cudnn.benchmark = True
     else:
         device = torch.device('cpu')
-    episode_memory_device = torch.device('cpu') # we do not support episdoe memory on GPU yet
+    episode_memory_device = torch.device('cpu') # we do not support episode memory on GPU yet
 
     if args.checkpoint:
         checkpoint = load_checkpoint(args.checkpoint)
@@ -134,15 +130,19 @@ def load_trainer(args, interactive: bool) -> Trainer:
         history = checkpoint['history']
     else:
         model = TurboZeroResnet(ResNetConfig(**raw_config['model_config']), env_train.state_shape, env_train.policy_shape).to(device)
+        # NEW: For durak, override the value head activation to standard tanh so outputs are in [-1, 1]
+        if env_config['env_type'] == 'durak':
+            import torch.nn as nn
+            model.value_head_activation = nn.Tanh()
         optimizer = torch.optim.SGD(model.parameters(), lr=raw_config['train_mode_config']['learning_rate'], momentum=raw_config['train_mode_config']['momentum'], weight_decay=raw_config['train_mode_config']['c_reg'])
         history = init_history()
 
     train_evaluator = init_evaluator(train_config['algo_config'], env_train, model)
-    train_collector = init_collector(episode_memory_device, env_type, train_evaluator)
+    train_collector = init_collector(episode_memory_device, env_config['env_type'], train_evaluator)
     test_evaluator = init_evaluator(train_config['test_config']['algo_config'], env_test, model)
-    test_collector = init_collector(episode_memory_device, env_type, test_evaluator)
-    tester = init_tester(train_config['test_config'], env_type, test_collector, model, history, optimizer, args.verbose, args.debug)
-    trainer = init_trainer(device, env_type, train_collector, tester, model, optimizer, train_config, env_config, history, args.verbose, interactive, run_tag, debug=args.debug)
+    test_collector = init_collector(episode_memory_device, env_config['env_type'], test_evaluator)
+    tester = init_tester(train_config['test_config'], env_config['env_type'], test_collector, model, history, optimizer, args.verbose, args.debug)
+    trainer = init_trainer(device, env_config['env_type'], train_collector, tester, model, optimizer, train_config, env_config, history, args.verbose, interactive, run_tag, debug=args.debug)
     return trainer
 
 def load_tester(args, interactive: bool) -> Tester:
@@ -162,43 +162,21 @@ def load_tester(args, interactive: bool) -> Tester:
         env = init_env(device, parallel_envs, env_config, args.debug)
         model, _ = load_model_and_optimizer_from_checkpoint(checkpoint, env, device)
         history = checkpoint['history']
-
     else:
         print('No checkpoint provided, please provide a checkpoint with --checkpoint')
         exit(1)
 
-    
+    # NEW: For durak, override the value head activation to standard tanh so outputs are in [-1, 1]
+    if env_config['env_type'] == 'durak':
+        import torch.nn as nn
+        model.value_head_activation = nn.Tanh()
+
     model = model.to(device)
     env_type = env_config['env_type']
     evaluator = init_evaluator(test_config['algo_config'], env, model)
     collector = init_collector(episode_memory_device, env_type, evaluator)
     tester = init_tester(test_config, env_type, collector, model, history, None, args.verbose, args.debug)
     return tester
-
-def load_tournament(args, interactive: bool) -> Tuple[Tournament, List[dict]]:
-    raw_config = load_config(args.config)
-    if torch.cuda.is_available() and args.gpu:
-        device = torch.device('cuda')
-        torch.backends.cudnn.deterministic = True
-    else:
-        device = torch.device('cpu')
-
-    tournament_config = raw_config['tournament_mode_config']
-    if args.checkpoint:
-        tournament = load_tournament_checkpoint(args.checkpoint, device)
-    else:
-        env = init_env(device, tournament_config['num_games'], raw_config['env_config'], args.debug)
-        tournament_name = tournament_config.get('tournament_name', 'tournament')
-        tournament = Tournament(env, tournament_config['num_games'], tournament_config['num_tournaments'], device, tournament_name, args.debug)
-
-    competitors = tournament_config['competitors']
-        
-    return tournament, competitors
-
-def load_demo(args) -> Demo:
-    raw_config = load_config(args.config)
-    return init_demo(raw_config['env_config'], raw_config['demo_config'], torch.device('cpu'))
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='TurboZero')
