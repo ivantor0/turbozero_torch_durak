@@ -62,10 +62,16 @@ class DurakEnv(Env):
         device: torch.device,
         debug: bool = False
     ):
-        # Minimal neural net input shape: (1,1,1)
-        # Policy shape = 39 => 36 card plays + 3 special moves
-        # Value shape = (1,)
-        state_shape  = torch.Size([1, 1, 1])
+        # Instead of a minimal (1,1,1) input, we now build a full state representation that is 93-dimensional.
+        # The state vector consists of:
+        #  - current player's hand (36)
+        #  - table cards (flattened 6x2 = 12)
+        #  - discard mask (36)
+        #  - trump suit as one-hot (4)
+        #  - phase as one-hot (4)
+        #  - attacker indicator (1)
+        # Total = 36+12+36+4+4+1 = 93.
+        state_shape  = torch.Size([93, 1, 1])
         policy_shape = torch.Size([_NUM_CARDS + 3])  # 39 possible actions
         value_shape  = torch.Size([1])
 
@@ -118,6 +124,40 @@ class DurakEnv(Env):
         self._step_count = torch.zeros(parallel_envs, dtype=torch.long, device=device)
 
         self.reset()
+
+    def get_nn_input(self) -> torch.Tensor:
+        """
+        Construct the neural network input from the internal (private) state.
+        Only the current player's hand is visible; opponent's hand is masked out.
+        We also include public information: table cards, discard pile, trump suit,
+        current phase, and an indicator of whether the current player is the attacker.
+        The output is a tensor of shape (parallel_envs, 93) which is then reshaped to (93,1,1).
+        """
+        # Determine current player for each environment (0 or 1)
+        cp = self.cur_players  # shape (parallel_envs,)
+        idx = torch.arange(self.parallel_envs, device=self.device)
+        # current player's hand (as float)
+        hands = self._hands[idx, cp].float()  # shape (parallel_envs, 36)
+        # table cards (all public, convert -1 to 0 for "empty" then leave card indices as is normalized by _NUM_CARDS)
+        table = self._table_cards.float().view(self.parallel_envs, -1)  # shape (parallel_envs, 12)
+        # discard mask (binary vector)
+        discard = self._discard.float()  # shape (parallel_envs, 36)
+        # trump suit as one-hot vector (if trump not revealed, all zeros)
+        trump = torch.zeros((self.parallel_envs, 4), device=self.device)
+        valid_trump = self._trump_suit >= 0
+        indices = self._trump_suit.clone()
+        indices[~valid_trump] = 0
+        trump[idx, indices] = valid_trump.float()
+        # phase as one-hot (4)
+        phase = torch.zeros((self.parallel_envs, 4), device=self.device)
+        phase[idx, self._phase] = 1.0
+        # Attacker indicator: 1 if current player is the attacker, 0 otherwise.
+        attacker_indicator = (self._attacker == cp).float().unsqueeze(1)  # shape (parallel_envs, 1)
+        # Concatenate all features along dimension 1 (total length = 36+12+36+4+4+1 = 93)
+        state_vec = torch.cat([hands, table, discard, trump, phase, attacker_indicator], dim=1)
+        # Reshape to (parallel_envs, 93, 1, 1) to match state_shape.
+        return state_vec.view(self.parallel_envs, 93, 1, 1)
+
 
     def reset(self, seed: Optional[int] = None) -> int:
         if seed is not None:
@@ -601,7 +641,7 @@ class DurakEnv(Env):
         self.update_terminated()
 
     # -------------------- Debug Printing --------------------
-    def print_state(self, last_action: Optional[int] = None):
+    def print_state(self, last_action: Optional[int] = None) -> None:
         """
         For debugging environment #0
         """
@@ -613,9 +653,8 @@ class DurakEnv(Env):
         tsuit = self._trump_suit[i].item()
         sc    = self._step_count[i].item()
 
-
         print(f"--- [DurakEnv] environment {i} step_count={sc} ---")
-        print(f"phase={ph}, attacker={atk}, defender={dfd}")
+        print(f"phase={ph}, attacker={atk+1}, defender={dfd+1}")
         print(f"deck_pos={self._deck_pos[i].item()}, cards_dealt={self._cards_dealt[i].item()}")
         if tcard >= 0:
             print(f"trump_card={card_to_string(tcard)} (suit={tsuit})")
@@ -623,10 +662,9 @@ class DurakEnv(Env):
             print("trump_card=???")
         # Hands
         for p in range(_NUM_PLAYERS):
-            card_idxs = torch.nonzero(self._hands[i,p], as_tuple=False).flatten().tolist()
+            card_idxs = torch.nonzero(self._hands[i, p], as_tuple=False).flatten().tolist()
             card_strs = [card_to_string(c) for c in card_idxs]
-            print(f"  Player {p} hand = {card_strs}")
-
+            print(f"  Player {p+1} hand = {card_strs}")
         # Table
         trows = self._table_cards[i].cpu().numpy()
         table_strs = []
@@ -647,7 +685,6 @@ class DurakEnv(Env):
         disc_idxs = torch.nonzero(self._discard[i], as_tuple=False).flatten().tolist()
         disc_strs = [card_to_string(c) for c in disc_idxs]
         print(f"  Discard: {disc_strs}")
-
         if last_action is not None:
             if last_action < _NUM_CARDS:
                 la_str = card_to_string(last_action)
