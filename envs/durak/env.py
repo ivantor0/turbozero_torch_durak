@@ -282,9 +282,8 @@ class DurakEnv(Env):
             deck_rem = _NUM_CARDS - self._deck_pos[i].item()
             # Check forced timeout
             if self._step_count[i].item() >= _MAX_STEPS:
-                # If we want to penalize stalling, do final_results[i,:] = -1
-                # Or treat it as a draw => 0. We'll do draw:
-                final_results[i, :] = 0.0
+                # We will penalize stalling
+                final_results[i, :] = -1.0
                 continue
 
             # Evaluate normal end
@@ -685,6 +684,7 @@ class DurakEnv(Env):
         disc_idxs = torch.nonzero(self._discard[i], as_tuple=False).flatten().tolist()
         disc_strs = [card_to_string(c) for c in disc_idxs]
         print(f"  Discard: {disc_strs}")
+
         if last_action is not None:
             if last_action < _NUM_CARDS:
                 la_str = card_to_string(last_action)
